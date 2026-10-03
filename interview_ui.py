@@ -220,6 +220,53 @@ def inject_theme():
     .loader-sub { color: var(--text-secondary); font-size: 14px; }
 
     /* Code editor label strip */
+        /* Rules & Guidelines card (shown before the interview starts) */
+    .rules-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 22px 26px;
+        margin: 1rem 0 1.5rem;
+    }
+    .rules-section { margin-bottom: 18px; }
+    .rules-section:last-child { margin-bottom: 0; }
+    .rules-section-title {
+        font-family: 'Sora', sans-serif;
+        font-weight: 700;
+        font-size: 15px;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .rules-list { list-style: none; margin: 0; padding: 0; }
+    .rules-list li {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 6px 0;
+        font-size: 14px;
+        color: var(--text-primary);
+        line-height: 1.5;
+    }
+    .rules-list li .rule-text {
+    flex: 1;
+    }
+    .rules-list li .bullet-icon {
+        flex-shrink: 0;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        margin-top: 1px;
+    }
+    .rules-list li .bullet-icon.coral { background: rgba(255,107,107,0.15); color: var(--coral); }
+    .rules-list li .bullet-icon.amber { background: rgba(255,169,77,0.15); color: var(--amber); }
+    .rules-list li .bullet-icon.teal { background: rgba(78,205,196,0.15); color: var(--teal); }
     .code-strip {
         display: flex; justify-content: space-between; align-items: center;
         background: var(--surface); border: 1px solid var(--border); border-bottom: none;
@@ -230,7 +277,7 @@ def inject_theme():
     """, unsafe_allow_html=True)
 
 
-def render_step_progress(current_step, total_steps=3):
+def render_step_progress(current_step, total_steps=4):
     """Decorative only: draws the top progress bar for the 3-step lobby wizard."""
     segs = "".join(
         f'<div class="step-seg {"filled" if i < current_step else ""}"></div>'
@@ -263,6 +310,63 @@ def render_status_badge(status):
     icon = icon_map.get(status, "–")
     st.markdown(f'<span class="status-pill {cls}">{icon} {status}</span>', unsafe_allow_html=True)
 
+def render_rules_panel():
+    """Decorative only: shows the candidate a bullet-point explanation of how
+    the AI interview works, how to operate it, and the exact marking scheme."""
+    html = """
+    <div class="rules-card">
+
+        <div class="rules-section">
+            <div class="rules-section-title">🧭 How this interview works</div>
+            <ul class="rules-list">
+                <li><span class="bullet-icon coral">1</span><span class="rule-text">You'll be asked <b>5 questions</b> in total, generated fresh by AI based on your selected role, skill and difficulty — no two attempts are exactly the same.</span></li>
+                <li><span class="bullet-icon coral">2</span><span class="rule-text">Depending on the format you chose, questions are either <b>Theory</b> (answer by typing or speaking) or <b>Coding</b> (write and run real code in the editor).</span></li>
+                <li><span class="bullet-icon coral">3</span><span class="rule-text">Once you move to the next question, you <b>cannot go back</b> to a previous one.</span></li>
+            </ul>
+        </div>
+
+        <div class="rules-section">
+            <div class="rules-section-title">🎛️ Operating the interview</div>
+            <ul class="rules-list">
+                <li><span class="bullet-icon teal">1</span><span class="rule-text">The AI reads each question aloud automatically.</span></li>
+                <li><span class="bullet-icon teal">2</span><span class="rule-text">For Theory questions: type your answer, or use the <b>mic button</b> — on desktop, hold <b>Ctrl + Shift</b> to speak; on mobile, just <b>tap once to start</b> and <b>tap again to stop</b>.</span></li>
+                <li><span class="bullet-icon teal">3</span><span class="rule-text">For Coding questions: write your solution in the editor and click <b>Run Code</b> to test it as many times as you want before submitting — running code does not use up an attempt.</span></li>
+                <li><span class="bullet-icon teal">4</span><span class="rule-text">Use the <b>Rough Pad</b> in the sidebar to jot down notes or work through logic — it is not submitted or scored.</span></li>
+                <li><span class="bullet-icon teal">5</span><span class="rule-text">Click <b>Save & Next Question</b> (or <b>Final Submit Exam</b> on the last question) when you're ready to move on.</span></li>
+            </ul>
+        </div>
+
+        <div class="rules-section">
+            <div class="rules-section-title">⏱️ Timing</div>
+            <ul class="rules-list">
+                <li><span class="bullet-icon amber">1</span><span class="rule-text">Each question has a <b>countdown timer</b> based on the difficulty level — the ring in the top-right turns amber, then red, as time runs low.</span></li>
+                <li><span class="bullet-icon amber">2</span><span class="rule-text">If the timer runs out, your current answer is auto-submitted as-is and the interview moves on.</span></li>
+                <li><span class="bullet-icon amber">3</span><span class="rule-text">Staying inactive for too long is also treated the same as running out of time.</span></li>
+            </ul>
+        </div>
+
+        <div class="rules-section">
+            <div class="rules-section-title">🚫 Conduct during the test</div>
+            <ul class="rules-list">
+                <li><span class="bullet-icon coral">1</span><span class="rule-text">Switching tabs or minimizing the window is detected — doing so is logged as a <b>cheating attempt</b> and that question is marked wrong.</span></li>
+                <li><span class="bullet-icon coral">2</span><span class="rule-text">Copy and paste are disabled inside the answer area and code editor.</span></li>
+            </ul>
+        </div>
+
+        <div class="rules-section">
+            <div class="rules-section-title">🤖 How answers are scored</div>
+            <ul class="rules-list">
+                <li><span class="bullet-icon teal">1</span><span class="rule-text">Theory answers are reviewed by AI for correctness and depth — minor typos are never penalized.</span></li>
+                <li><span class="bullet-icon teal">2</span><span class="rule-text">Code answers run in a secure sandbox against test cases, then get an AI code review.</span></li>
+                <li><span class="bullet-icon teal">3</span><span class="rule-text">Every answer gets one of four marks — <b>Correct: +1</b>, <b>Partial: +0.5</b>, <b>Wrong: -0.25</b>, <b>Incomplete (skipped/timed out): 0</b>.</span></li>
+                <li><span class="bullet-icon teal">4</span><span class="rule-text">Your final report shows a total score out of 5, a status for every question, and detailed AI feedback on each answer.</span></li>
+            </ul>
+        </div>
+
+    </div>
+    """
+    html = "\n".join(line.strip() for line in html.strip("\n").split("\n"))
+    st.markdown(html, unsafe_allow_html=True)
 
 def render_score_ring(score, max_score):
     """Decorative only: renders the circular score ring on the results screen,
@@ -554,7 +658,7 @@ def main():
                         st.rerun()
             elif st.session_state.lobby_step == 3:
                 render_step_progress(3)
-                st.subheader("🔥 Step 3: Set Difficulty & Start")
+                st.subheader("🔥 Step 3: Set Difficulty")
                 st.info(f"**Target Role:** {st.session_state.selected_role}\n\n**Testing Skill:** {st.session_state.category} ({st.session_state.interview_type})")
                 difficulty = st.selectbox("Choose Difficulty Level:", ["Foundation", "Applied", "Advanced", "Expert"])
                 render_difficulty_timeline(difficulty)
@@ -564,8 +668,23 @@ def main():
                         st.session_state.lobby_step = 2
                         st.rerun()
                 with col2:
-                    if st.button("Start Interview 🚀", type="primary"):
+                    if st.button("Next ➡️", type="primary"):
+                        print(f"🔍 [UI X-RAY] Lobby Step 3 -> Difficulty: {difficulty}")
                         st.session_state.difficulty = difficulty
+                        st.session_state.lobby_step = 4
+                        st.rerun()
+            elif st.session_state.lobby_step == 4:
+                render_step_progress(4)
+                st.subheader("📋 Step 4: Interview Rules & Guidelines")
+                st.info(f"**Target Role:** {st.session_state.selected_role}\n\n**Testing Skill:** {st.session_state.category} ({st.session_state.interview_type})\n\n**Difficulty:** {st.session_state.difficulty}")
+                render_rules_panel()
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("⬅️ Back"):
+                        st.session_state.lobby_step = 3
+                        st.rerun()
+                with col2:
+                    if st.button("Start Interview 🚀", type="primary"):
                         st.session_state.seen_questions = []
                         st.session_state.exam_answers = []
                         st.session_state.cheat_count = 0
@@ -573,7 +692,7 @@ def main():
                         
                         with st.spinner("Preparing your interview environment..."):
                             print("🔍 [UI X-RAY] Starting New Interview...")
-                            print(f"🔍 [UI X-RAY] Role={st.session_state.selected_role}, Type={st.session_state.interview_type}, Skill={st.session_state.category}, Diff={difficulty}")
+                            print(f"🔍 [UI X-RAY] Role={st.session_state.selected_role}, Type={st.session_state.interview_type}, Skill={st.session_state.category}, Diff={st.session_state.difficulty}")
                             q = fetch_question(st.session_state.category, st.session_state.difficulty, st.session_state.seen_questions, st.session_state.interview_type, st.session_state.selected_role)
                             if q.startswith("TEST_COMPLETE") or q.startswith("SYSTEM ERROR"):
                                 print(f"🚨 [UI X-RAY] Could not get even the first question: {q}")
@@ -747,7 +866,7 @@ def main():
                         <strong>🤖 AI Recruiter</strong>
                         <span class="ai-wave"><span></span><span></span><span></span></span>
                     </div>
-                    <button class="ai-mic-btn" onclick="playVoice()">🔊</button>
+                    <button class="ai-mic-btn" onclick="playVoice()"></button>
                 </div>
                 <div id="typewriter"></div>
             </div>
