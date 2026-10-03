@@ -477,9 +477,35 @@ def advance_to_next_question():
         st.session_state.stage = "interview"
         trigger_preload()
 
+def lock_selectbox_typing():
+    """Prevents typing/deleting inside Streamlit's selectbox search field
+    (its hidden <input> normally supports type-to-filter). Keeps click-to-open
+    and click-to-choose working exactly as before — only blocks manual keyboard
+    edits, which was confusing candidates into thinking the role/skill name
+    could be erased."""
+    components.html("""
+        <script>
+            const doc = window.parent.document;
+            function lockInputs() {
+                doc.querySelectorAll('input[aria-autocomplete="list"]').forEach(inp => {
+                    if (!inp.hasAttribute('readonly')) {
+                        inp.setAttribute('readonly', 'readonly');
+                    }
+                });
+            }
+            lockInputs();
+            if (!window.parent.__selectboxLockObserver) {
+                const observer = new MutationObserver(lockInputs);
+                observer.observe(doc.body, { childList: true, subtree: true });
+                window.parent.__selectboxLockObserver = observer;
+            }
+        </script>
+    """, height=0, width=0)
+
 def main():
     st.set_page_config(page_title="AI Interview Trainer", page_icon="🤖", layout="centered")
     inject_theme()
+    lock_selectbox_typing()
     st.markdown("<style>* { user-select: none !important; } textarea { user-select: text !important; }</style>", unsafe_allow_html=True)
     initialize_session()
 
@@ -812,7 +838,7 @@ def main():
                         advance_to_next_question()
                         st.rerun()
         else:
-            user_ans = st.text_area("Your Answer:", height=150, placeholder="Type your answer here...", key=f"ans_box_{q_num}")
+            user_ans = st.text_area("Your Answer:", height=150, placeholder="Tap here and type your answer...", key=f"ans_box_{q_num}")
             # Auto-focus the answer box as soon as this question loads, so the
             # candidate can start typing immediately without clicking into it.
             components.html(f"""
@@ -861,7 +887,7 @@ def main():
 
                             <div style="text-align: right; margin-top: -10px;">
                                 <button id="micBtn" class="mic-inactive" style="color: white; border: none; padding: 10px 20px; border-radius: 10px; font-weight: bold; font-family: -apple-system, 'Segoe UI', sans-serif;">
-                                    🎙️ Hold [Ctrl + Shift] to Speak
+                                    🎙️ Tap to Speak (or Hold Ctrl+Shift)
                                 </button>
                             </div>
 
@@ -880,6 +906,19 @@ def main():
                                     }
                                     
                                     parent.isHoldingKeys = false;
+                                        // Tap-to-toggle support for mobile (no physical keyboard there,
+                                        // so Ctrl+Shift can't work) — works on desktop too via click.
+                                            let micOnByTap = false;
+                                            micBtn.addEventListener('click', () => {
+                                                if (parent.aiSpeaking) return;
+                                                if (!micOnByTap) {
+                                                    micOnByTap = true;
+                                                    try { parent.myMic.start(); } catch(err) {}
+                                                } else {
+                                                    micOnByTap = false;
+                                                    try { parent.myMic.stop(); } catch(err) {}
+                                                }
+                                            });
 
                                     parent.myMic.onstart = () => { 
                                         micBtn.classList.remove('mic-inactive');
