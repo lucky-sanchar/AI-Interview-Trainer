@@ -21,12 +21,170 @@ logging.getLogger("google").setLevel(logging.ERROR)
 VALID_STATUSES = {"Correct", "Partial", "Wrong", "Incomplete"}
 MIN_ANSWER_LENGTH = 15
 
+RESUME_CATEGORY = "Resume Based"
+DEFAULT_IDEAL = ("Candidate should logically explain their specific project architecture, practical "
+                 "implementation, and any trade-offs faced.")
+DEFAULT_KEYWORDS = "project, logic, architecture, implementation"
+
+# in-memory backup (the DB is the main source of truth)
+_REFERENCE_REGISTRY = {}
+
 # Common phrases used when a candidate skips or doesn't know the answer
 NON_ANSWER_PHRASES = [
     "i don't know", "i do not know", "dont know", "idk", "no idea",
     "not sure", "skip", "pass", "na", "n/a", "nhi aata", "nahi aata",
     "pata nahi", "pta nhi", "nothing"
 ]
+
+
+# =========================================================
+# 1B. REFERENCE ANSWER STORE (used for resume questions + NLP fallback + results screen)
+# =========================================================
+def norm_q(text):
+    """Compare-safe version of a question: no '**Question:**', no markdown, one space, lowercase."""
+    t = str(text or "").replace("**Question:**", " ")
+    t = re.sub(r"[*_`#>]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip().lower()
+    return t.strip(" .?:;-")
+
+
+def _connect():
+    return sqlite3.connect(DB_NAME, timeout=10)
+
+
+def _ensure_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS interview_questions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            difficulty TEXT,
+            interview_type TEXT,
+            job_role TEXT DEFAULT '',
+            question TEXT UNIQUE,
+            ideal_answer TEXT,
+            mandatory_keywords TEXT,
+            test_cases TEXT
+        )
+    """)
+    try:
+        conn.execute("ALTER TABLE interview_questions ADD COLUMN job_role TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+
+
+def register_reference(question, ideal_answer, keywords, category=RESUME_CATEGORY,
+                       difficulty="Applied", job_role="Resume"):
+    """Stores question + ideal answer + keywords in the DB (and memory). Safe to call repeatedly."""
+    q = str(question or "").replace("**Question:**", "").strip()
+    if not q:
+        return False
+    ideal = str(ideal_answer or "").strip() or DEFAULT_IDEAL
+    if isinstance(keywords, (list, tuple)):
+        keywords = ", ".join(str(k) for k in keywords)
+    kws = str(keywords or "").strip() or DEFAULT_KEYWORDS
+
+    _REFERENCE_REGISTRY[norm_q(q)] = {"ideal_answer": ideal, "keywords": kws}
+    try:
+        conn = _connect()
+        _ensure_table(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO interview_questions "
+            "(category, difficulty, interview_type, job_role, question, ideal_answer, mandatory_keywords, test_cases) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (category, difficulty, "Theory", job_role, q, ideal, kws, "[]")
+        )
+        cur.execute("UPDATE interview_questions SET ideal_answer=?, mandatory_keywords=? WHERE question=?",
+                    (ideal, kws, q))
+        conn.commit()
+        conn.close()
+        print(f" 🗄️ [REF-X-RAY] Reference saved for: {q[:50]}...")
+    except Exception as e:
+        print(f" 🗄️ [REF-X-RAY ERROR] DB save failed (memory copy kept): {e}")
+    return True
+
+
+def get_reference(question):
+    """Returns {"ideal_answer": str, "keywords": str}. Tolerant to spaces / '**Question:**' / markdown."""
+    raw = str(question or "")
+    clean = raw.replace("**Question:**", "").strip()
+    key = norm_q(raw)
+
+    try:
+        conn = _connect()
+        cur = conn.cursor()
+        cur.execute("SELECT ideal_answer, mandatory_keywords FROM interview_questions WHERE question=? OR question=?",
+                    (clean, raw))
+        row = cur.fetchone()
+        if not row:
+            cur.execute("SELECT question, ideal_answer, mandatory_keywords FROM interview_questions")
+            for dq, ia, kw in cur.fetchall():
+                if norm_q(dq) == key:
+                    row = (ia, kw)
+                    break
+        conn.close()
+        if row and (row[0] or row[1]):
+            return {"ideal_answer": row[0] or "", "keywords": row[1] or ""}
+    except Exception as e:
+        print(f" 🗄️ [REF-X-RAY] DB lookup failed: {e}")
+
+    if key in _REFERENCE_REGISTRY:
+        return dict(_REFERENCE_REGISTRY[key])
+    close = difflib.get_close_matches(key, list(_REFERENCE_REGISTRY.keys()), n=1, cutoff=0.9)
+    if close:
+        return dict(_REFERENCE_REGISTRY[close[0]])
+    return {"ideal_answer": "", "keywords": ""}
+
+
+def _generate_reference_via_api(q_text):
+    prompt = f"""
+    You are an expert interviewer. For this technical question: "{q_text}"
+    Provide:
+    1. A brief 2-3 sentence human-like "ideal_answer".
+    2. A comma-separated list of 3-5 "mandatory_keywords".
+    Return ONLY a JSON object: {{"ideal_answer": "...", "mandatory_keywords": "..."}}
+    """
+    for key in EVAL_GEMINI_KEYS:
+        if not key or key.startswith("YOUR_"):
+            continue
+        try:
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+            payload = {"contents": [{"parts": [{"text": prompt}]}],
+                       "generationConfig": {"responseMimeType": "application/json", "temperature": 0.3}}
+            res = requests.post(url, params={"key": key}, json=payload, timeout=8.0)
+            if res.status_code == 200:
+                parsed = json.loads(res.json()["candidates"][0]["content"]["parts"][0]["text"])
+                return (parsed.get("ideal_answer") or DEFAULT_IDEAL,
+                        parsed.get("mandatory_keywords") or DEFAULT_KEYWORDS)
+        except Exception as e:
+            print(f"⚠️ [RESUME-DB ERROR] Failed to fetch AI answer: {e}")
+    return DEFAULT_IDEAL, DEFAULT_KEYWORDS
+
+
+def save_resume_questions_to_db(questions_list, category=None, difficulty="Applied",
+                                interview_type="Theory", job_role="Resume"):
+    """Backward-compatible. Makes sure every resume question has a stored reference answer.
+    Skips the API call if resume_engine already registered one. Never raises."""
+    saved = []
+    for q_text in questions_list or []:
+        try:
+            q_text = str(q_text).replace("**Question:**", "").strip()
+            if not q_text:
+                continue
+            ref = get_reference(q_text)
+            if ref["ideal_answer"]:
+                saved.append(q_text)
+                continue
+            print(f"🧠 [RESUME-DB] Generating Ideal Answer for DB: {q_text[:40]}...")
+            ideal, kws = _generate_reference_via_api(q_text)
+            register_reference(q_text, ideal, kws, category=RESUME_CATEGORY,
+                               difficulty=difficulty or "Applied", job_role="Resume")
+            saved.append(q_text)
+        except Exception as e:
+            print(f"❌ [RESUME-DB ERROR] {e}")
+            saved.append(q_text)
+    return saved
 
 
 # =========================================================
@@ -39,33 +197,20 @@ def parse_json_response(ai_text):
             return json.loads(match.group(0))
         return json.loads(ai_text)
     except Exception as e:
-        print(f"  ⚠️ [X-RAY ERROR] JSON Parsing Failed. Raw text: {ai_text[:60]}...")
+        print(f"  ⚠️ [X-RAY ERROR] JSON Parsing Failed. Raw text: {str(ai_text)[:60]}...")
         return None
 
 
 # =========================================================
-# 3. DATABASE FETCH (Used ONLY for NLP Emergency Fallback)
+# 3. REFERENCE FETCH (Used ONLY for NLP Emergency Fallback)
 # =========================================================
 def get_question_details(question_text):
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT ideal_answer, mandatory_keywords FROM interview_questions WHERE question=?",
-            (question_text,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        if row:
-            print(f" 🗄️ [DB-X-RAY] ✅ Fetched Ideal Answer ({len(row[0] or '')} chars) & Keywords for Fallback.")
-            return row[0] if row[0] else "", row[1] if row[1] else ""
-        else:
-            print(" 🗄️ [DB-X-RAY] ⚠️ Question not found in DB. Using blank references.")
-            return "", ""
-    except Exception as e:
-        print(f" 🗄️ [DB-X-RAY ERROR] Fetch failed: {e}")
-        return "", ""
+    ref = get_reference(question_text)
+    if ref["ideal_answer"] or ref["keywords"]:
+        print(f" 🗄️ [DB-X-RAY] ✅ Fetched Ideal Answer ({len(ref['ideal_answer'])} chars) & Keywords for Fallback.")
+    else:
+        print(" 🗄️ [DB-X-RAY] ⚠️ Question not found in DB. Using blank references.")
+    return ref["ideal_answer"], ref["keywords"]
 
 
 # =========================================================
@@ -82,7 +227,6 @@ def analyze_filler_words(answer):
 def is_non_answer(answer_text):
     """Detects if the candidate explicitly stated they do not know the answer."""
     lower_ans = answer_text.lower().strip()
-    # If the answer is relatively short and contains a direct 'I don't know' phrase
     if len(lower_ans.split()) <= 15:
         for phrase in NON_ANSWER_PHRASES:
             if phrase in lower_ans:
@@ -106,18 +250,15 @@ def nlp_emergency_evaluation(user_answer, ideal_answer, mandatory_keywords):
             "overall_feedback": "System overloaded and reference data missing. Manual review required."
         }
 
-    # 1. Similarity Calculation
-    similarity = difflib.SequenceMatcher(None, user_answer.lower(), ideal_answer.lower()).ratio()
+    similarity = difflib.SequenceMatcher(None, user_answer.lower(), (ideal_answer or "").lower()).ratio()
     print(f" 🧮 [NLP-X-RAY] Mathematical Similarity: {similarity*100:.1f}%")
 
-    # 2. Keyword Checking
-    keywords_list = [k.strip().lower() for k in mandatory_keywords.split(",") if k.strip()]
+    keywords_list = [k.strip().lower() for k in (mandatory_keywords or "").split(",") if k.strip()]
     matched_kws = [k for k in keywords_list if k in user_answer.lower()]
     missing_kws = [k for k in keywords_list if k not in user_answer.lower()]
 
     print(f" 🧮 [NLP-X-RAY] Matched Keywords: {len(matched_kws)}/{len(keywords_list)} -> {matched_kws}")
 
-    # 3. Decision Logic
     has_keywords = len(keywords_list) > 0
     passed_keywords = has_keywords and (len(matched_kws) >= (len(keywords_list) / 2))
 
@@ -153,7 +294,6 @@ def evaluate_candidate_answer(question, user_answer, difficulty="Applied"):
 
     cleaned_answer = (user_answer or "").strip()
 
-    # Check 1: Catch overly brief responses
     if len(cleaned_answer) < MIN_ANSWER_LENGTH:
         print(f" ❌ [X-RAY] Answer too short (< {MIN_ANSWER_LENGTH} chars). Marking as Wrong without API call.")
         return {
@@ -161,7 +301,6 @@ def evaluate_candidate_answer(question, user_answer, difficulty="Applied"):
             "overall_feedback": "Invalid Submission: Your response is too brief or lacks sufficient technical explanation to be evaluated. Please provide a complete conceptual answer."
         }
 
-    # Check 2: Catch explicit 'I don't know' or skip responses locally
     if is_non_answer(cleaned_answer):
         print(" ❌ [X-RAY] Candidate explicitly stated they do not know the answer. Marking as Wrong without API call.")
         return {
@@ -169,9 +308,6 @@ def evaluate_candidate_answer(question, user_answer, difficulty="Applied"):
             "overall_feedback": "It appears you did not know the answer to this question. Review the core concepts related to this topic and try again in your next practice session."
         }
 
-    # Notice: We DO NOT pass ideal_answer or mandatory_keywords into the AI prompt.
-    # This prevents smaller models (like Cohere command-r7b) from hallucinating that the
-    # candidate wrote the reference answer.
     prompt = f"""
     You are a strict, objective, and constructive Senior Technical Interviewer evaluating a candidate's conceptual answer.
     Candidate Level: {difficulty}
@@ -231,7 +367,7 @@ def evaluate_candidate_answer(question, user_answer, difficulty="Applied"):
         except Exception as e:
             print(f"  ⚠️ [X-RAY ERROR] Groq Key {index + 1} Failed: {e}")
 
-# --- ENGINE 2: GEMINI ---
+    # --- ENGINE 2: GEMINI ---
     print(" 🔵 [ENGINE 2] Routing to Gemini for Evaluation...")
     for index, key in enumerate(EVAL_GEMINI_KEYS):
         if not key or key.startswith("YOUR_"):
@@ -239,12 +375,15 @@ def evaluate_candidate_answer(question, user_answer, difficulty="Applied"):
         try:
             print(f"  -> Testing Gemini Key {index + 1}...")
             client = genai.Client(api_key=key)
-            interaction = client.interactions.create(
-                model="gemini-3.5-flash",
-                input=prompt
-            )
+            try:
+                resp = client.models.generate_content(model="gemini-3.5-flash", contents=prompt)
+                raw_text = resp.text
+            except Exception as inner:
+                print(f"  ⚠️ [X-RAY] generate_content failed ({inner}); trying interactions API...")
+                interaction = client.interactions.create(model="gemini-3.5-flash", input=prompt)
+                raw_text = interaction.output_text
 
-            parsed = parse_json_response(interaction.output_text.strip())
+            parsed = parse_json_response((raw_text or "").strip())
             if _valid(parsed):
                 print(f" 🔵 [ENGINE 2] SUCCESS (Gemini Key {index + 1}) -> Status: {parsed['status']}")
                 return parsed
@@ -321,13 +460,13 @@ if __name__ == "__main__":
         print(json.dumps(res1, indent=2))
         print(f"Points: {calculate_score(res1)}")
 
-        print("\n--- TEST CASE 2: Failing / Vague Wrong Answer (Tests Cohere directly) ---")
+        print("\n--- TEST CASE 2: Failing / Vague Wrong Answer ---")
         ans_2 = "We can just write multiple if-else statements inside the main class every time a new notification type is needed."
         res2 = evaluate_candidate_answer(t_question, ans_2)
         print(json.dumps(res2, indent=2))
         print(f"Points: {calculate_score(res2)}")
-        
-        print("\n--- TEST CASE 3: Explicit 'I don't know' Check (Tests Local Filter) ---")
+
+        print("\n--- TEST CASE 3: Explicit 'I don't know' Check ---")
         ans_3 = "I do not know the exact answer to this question right now."
         res3 = evaluate_candidate_answer(t_question, ans_3)
         print(json.dumps(res3, indent=2))

@@ -4,7 +4,6 @@ import time
 import json
 import threading
 import traceback
-import concurrent.futures
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 import streamlit.components.v1 as components
 from streamlit_ace import st_ace
@@ -13,19 +12,16 @@ from roles_db import ROLES_DATA
 import questions_generate
 import evaluate_answer
 import code_evaluate
+import resume_engine  
 
 TIME_LIMITS = {"Foundation": 90, "Applied": 180, "Advanced": 300, "Expert": 420}
 TOTAL_QUESTIONS = 5
 
 # =========================================================
 # UI THEME & PRESENTATION HELPERS
-# (Pure styling / decorative rendering only — no session_state writes,
-#  no control flow, no business logic lives in this section.)
 # =========================================================
 
 def inject_theme():
-    """Injects the global dark theme (colors, fonts, widget skinning) used across
-    every screen. Only changes appearance — never touches state or logic."""
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -67,7 +63,6 @@ def inject_theme():
 
     p, span, label, li { color: var(--text-primary); }
 
-    /* Buttons */
     .stButton > button {
         border-radius: 12px !important;
         border: 1px solid var(--border) !important;
@@ -96,9 +91,9 @@ def inject_theme():
         transform: translateY(-2px);
     }
 
-    /* Selectbox / Radio / Text areas */
     [data-testid="stSelectbox"] > div > div,
-    [data-testid="stTextArea"] textarea {
+    [data-testid="stTextArea"] textarea,
+    [data-testid="stTextInput"] > div > div {
         background: var(--surface) !important;
         border: 1px solid var(--border) !important;
         border-radius: 12px !important;
@@ -113,7 +108,6 @@ def inject_theme():
         box-shadow: 0 0 0 1px var(--coral) !important;
     }
 
-    /* Expander (results accordion) */
     [data-testid="stExpander"] {
         background: var(--surface) !important;
         border: 1px solid var(--border) !important;
@@ -126,26 +120,22 @@ def inject_theme():
         font-weight: 600 !important;
     }
 
-    /* Alerts */
     [data-testid="stAlert"] {
         border-radius: 12px !important;
         font-family: 'Inter', sans-serif !important;
         border: 1px solid var(--border) !important;
     }
 
-    /* Sidebar (Rough Pad) */
     [data-testid="stSidebar"] {
         background: var(--surface) !important;
         border-right: 1px solid var(--border) !important;
     }
 
-    /* Step progress bar (lobby) */
     .step-track { display: flex; align-items: center; gap: 8px; margin-bottom: 1.8rem; }
     .step-seg { height: 4px; flex: 1; border-radius: 999px; background: var(--border); overflow: hidden; }
     .step-seg.filled { background: var(--gradient); }
     .step-label { font-size: 13px; color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
 
-    /* Difficulty timeline */
     .diff-track { display: flex; align-items: center; justify-content: space-between; margin: 1.4rem 0; position: relative; }
     .diff-track::before {
         content: ""; position: absolute; top: 22px; left: 24px; right: 24px; height: 2px;
@@ -165,7 +155,6 @@ def inject_theme():
     .diff-name { font-size: 13px; color: var(--text-secondary); }
     .diff-name.active { color: var(--text-primary); font-weight: 600; }
 
-    /* Circular countdown timer */
     .timer-wrap { display: flex; justify-content: flex-end; margin-bottom: 0.6rem; }
     .timer-ring-box { position: relative; width: 64px; height: 64px; }
     .timer-ring-box svg { transform: rotate(-90deg); }
@@ -184,7 +173,6 @@ def inject_theme():
         50% { filter: drop-shadow(0 0 10px rgba(255,107,107,0.6)); }
     }
 
-    /* Status badges (results) */
     .status-pill {
         display: inline-flex; align-items: center; gap: 6px;
         padding: 4px 12px; border-radius: 999px;
@@ -196,7 +184,6 @@ def inject_theme():
     .status-pill.wrong { background: rgba(255,107,107,0.12); color: var(--coral); border-color: rgba(255,107,107,0.35); }
     .status-pill.incomplete { background: rgba(139,143,156,0.12); color: var(--text-secondary); border-color: rgba(139,143,156,0.35); }
 
-    /* Score ring (results hero) */
     .score-hero { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 1rem 0 2rem; }
     .score-ring-box { position: relative; width: 160px; height: 160px; }
     .score-ring-box svg { transform: rotate(-90deg); }
@@ -208,7 +195,6 @@ def inject_theme():
     .score-ring-text .num { font-family: 'Sora', sans-serif; font-size: 34px; font-weight: 800; }
     .score-ring-text .den { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-secondary); }
 
-    /* Processing loader */
     .loader-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4rem 0; gap: 1rem; }
     .orbit { position: relative; width: 90px; height: 90px; }
     .orbit-core { position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; border-radius: 50%; background: var(--gradient); }
@@ -219,8 +205,6 @@ def inject_theme():
     .loader-title { font-family: 'Sora', sans-serif; font-weight: 700; font-size: 19px; }
     .loader-sub { color: var(--text-secondary); font-size: 14px; }
 
-    /* Code editor label strip */
-        /* Rules & Guidelines card (shown before the interview starts) */
     .rules-card {
         background: var(--surface);
         border: 1px solid var(--border);
@@ -249,9 +233,7 @@ def inject_theme():
         color: var(--text-primary);
         line-height: 1.5;
     }
-    .rules-list li .rule-text {
-    flex: 1;
-    }
+    .rules-list li .rule-text { flex: 1; }
     .rules-list li .bullet-icon {
         flex-shrink: 0;
         width: 20px;
@@ -276,22 +258,11 @@ def inject_theme():
     </style>
     """, unsafe_allow_html=True)
 
-
 def render_step_progress(current_step, total_steps=4):
-    """Decorative only: draws the top progress bar for the 3-step lobby wizard."""
-    segs = "".join(
-        f'<div class="step-seg {"filled" if i < current_step else ""}"></div>'
-        for i in range(total_steps)
-    )
-    st.markdown(
-        f'<div class="step-track"><span class="step-label">Step {current_step} of {total_steps}</span>{segs}</div>',
-        unsafe_allow_html=True
-    )
-
+    segs = "".join(f'<div class="step-seg {"filled" if i < current_step else ""}"></div>' for i in range(total_steps))
+    st.markdown(f'<div class="step-track"><span class="step-label">Step {current_step} of {total_steps}</span>{segs}</div>', unsafe_allow_html=True)
 
 def render_difficulty_timeline(selected_difficulty):
-    """Decorative only: shows the 4 difficulty levels as a connected timeline,
-    highlighting whichever one the existing st.selectbox has chosen."""
     levels = ["Foundation", "Applied", "Advanced", "Expert"]
     nodes = ""
     for i, lvl in enumerate(levels, start=1):
@@ -301,9 +272,7 @@ def render_difficulty_timeline(selected_difficulty):
         nodes += f'<div class="diff-node"><div class="{circle_cls}">{i:02d}</div><div class="{name_cls}">{lvl}</div></div>'
     st.markdown(f'<div class="diff-track">{nodes}</div>', unsafe_allow_html=True)
 
-
 def render_status_badge(status):
-    """Decorative only: returns an HTML pill for a given status string."""
     cls_map = {"Correct": "correct", "Partial": "partial", "Wrong": "wrong", "Incomplete": "incomplete"}
     icon_map = {"Correct": "✓", "Partial": "◐", "Wrong": "✕", "Incomplete": "–"}
     cls = cls_map.get(status, "incomplete")
@@ -311,66 +280,37 @@ def render_status_badge(status):
     st.markdown(f'<span class="status-pill {cls}">{icon} {status}</span>', unsafe_allow_html=True)
 
 def render_rules_panel():
-    """Decorative only: shows the candidate a bullet-point explanation of how
-    the AI interview works, how to operate it, and the exact marking scheme."""
     html = """
     <div class="rules-card">
-
         <div class="rules-section">
             <div class="rules-section-title">🧭 How this interview works</div>
             <ul class="rules-list">
-                <li><span class="bullet-icon coral">1</span><span class="rule-text">You'll be asked <b>5 questions</b> in total, generated fresh by AI based on your selected role, skill and difficulty — no two attempts are exactly the same.</span></li>
-                <li><span class="bullet-icon coral">2</span><span class="rule-text">Depending on the format you chose, questions are either <b>Theory</b> (answer by typing or speaking) or <b>Coding</b> (write and run real code in the editor).</span></li>
-                <li><span class="bullet-icon coral">3</span><span class="rule-text">Once you move to the next question, you <b>cannot go back</b> to a previous one.</span></li>
+                <li><span class="bullet-icon coral">1</span><span class="rule-text">You'll be asked <b>5 questions</b> in total, generated fresh by AI based on your selected role, skill and difficulty.</span></li>
+                <li><span class="bullet-icon coral">2</span><span class="rule-text">Depending on the format you chose, questions are either <b>Theory</b> (answer by typing or speaking) or <b>Coding</b> (write and run real code).</span></li>
+                <li><span class="bullet-icon coral">3</span><span class="rule-text">Once you move to the next question, you <b>cannot go back</b>.</span></li>
             </ul>
         </div>
-
         <div class="rules-section">
             <div class="rules-section-title">🎛️ Operating the interview</div>
             <ul class="rules-list">
                 <li><span class="bullet-icon teal">1</span><span class="rule-text">The AI reads each question aloud automatically.</span></li>
-                <li><span class="bullet-icon teal">2</span><span class="rule-text">For Theory questions: type your answer, or use the <b>mic button</b> — on desktop, hold <b>Ctrl + Shift</b> to speak; on mobile, just <b>tap once to start</b> and <b>tap again to stop</b>.</span></li>
-                <li><span class="bullet-icon teal">3</span><span class="rule-text">For Coding questions: write your solution in the editor and click <b>Run Code</b> to test it as many times as you want before submitting — running code does not use up an attempt.</span></li>
-                <li><span class="bullet-icon teal">4</span><span class="rule-text">Use the <b>Rough Pad</b> in the sidebar to jot down notes or work through logic — it is not submitted or scored.</span></li>
-                <li><span class="bullet-icon teal">5</span><span class="rule-text">Click <b>Save & Next Question</b> (or <b>Final Submit Exam</b> on the last question) when you're ready to move on.</span></li>
+                <li><span class="bullet-icon teal">2</span><span class="rule-text">For Theory questions: type your answer, or use the <b>mic button</b>.</span></li>
+                <li><span class="bullet-icon teal">3</span><span class="rule-text">Click <b>Save & Next Question</b> when you're ready to move on.</span></li>
             </ul>
         </div>
-
         <div class="rules-section">
-            <div class="rules-section-title">⏱️ Timing</div>
+            <div class="rules-section-title">⏱️ Timing & Conduct</div>
             <ul class="rules-list">
-                <li><span class="bullet-icon amber">1</span><span class="rule-text">Each question has a <b>countdown timer</b> based on the difficulty level — the ring in the top-right turns amber, then red, as time runs low.</span></li>
-                <li><span class="bullet-icon amber">2</span><span class="rule-text">If the timer runs out, your current answer is auto-submitted as-is and the interview moves on.</span></li>
-                <li><span class="bullet-icon amber">3</span><span class="rule-text">Staying inactive for too long is also treated the same as running out of time.</span></li>
+                <li><span class="bullet-icon amber">1</span><span class="rule-text">Each question has a <b>countdown timer</b>.</span></li>
+                <li><span class="bullet-icon coral">2</span><span class="rule-text">Switching tabs or minimizing the window is detected as a cheating attempt.</span></li>
             </ul>
         </div>
-
-        <div class="rules-section">
-            <div class="rules-section-title">🚫 Conduct during the test</div>
-            <ul class="rules-list">
-                <li><span class="bullet-icon coral">1</span><span class="rule-text">Switching tabs or minimizing the window is detected — doing so is logged as a <b>cheating attempt</b> and that question is marked wrong.</span></li>
-                <li><span class="bullet-icon coral">2</span><span class="rule-text">Copy and paste are disabled inside the answer area and code editor.</span></li>
-            </ul>
-        </div>
-
-        <div class="rules-section">
-            <div class="rules-section-title">🤖 How answers are scored</div>
-            <ul class="rules-list">
-                <li><span class="bullet-icon teal">1</span><span class="rule-text">Theory answers are reviewed by AI for correctness and depth — minor typos are never penalized.</span></li>
-                <li><span class="bullet-icon teal">2</span><span class="rule-text">Code answers run in a secure sandbox against test cases, then get an AI code review.</span></li>
-                <li><span class="bullet-icon teal">3</span><span class="rule-text">Every answer gets one of four marks — <b>Correct: +1</b>, <b>Partial: +0.5</b>, <b>Wrong: -0.25</b>, <b>Incomplete (skipped/timed out): 0</b>.</span></li>
-                <li><span class="bullet-icon teal">4</span><span class="rule-text">Your final report shows a total score out of 5, a status for every question, and detailed AI feedback on each answer.</span></li>
-            </ul>
-        </div>
-
     </div>
     """
     html = "\n".join(line.strip() for line in html.strip("\n").split("\n"))
     st.markdown(html, unsafe_allow_html=True)
 
 def render_score_ring(score, max_score):
-    """Decorative only: renders the circular score ring on the results screen,
-    using the exact same already-computed score/max_score values as before."""
     pct = 0 if max_score == 0 else max(0.0, min(1.0, score / max_score))
     radius = 70
     circumference = 2 * 3.14159265 * radius
@@ -397,9 +337,7 @@ def render_score_ring(score, max_score):
     </div>
     """, unsafe_allow_html=True)
 
-
 def render_loader(title, subtitle):
-    """Decorative only: orbiting-dots loader shown on the processing screen."""
     st.markdown(f"""
     <div class="loader-wrap">
         <div class="orbit">
@@ -413,9 +351,59 @@ def render_loader(title, subtitle):
     </div>
     """, unsafe_allow_html=True)
 
+import html as _html
+import re as _re
+
+def _project_titles(projects_text, limit=5):
+    lines = [l.strip(" -•*\t") for l in (projects_text or "").splitlines()]
+    cands = [l for l in lines if 8 <= len(l) <= 90]
+    titled = [l for l in cands
+              if _re.search(r"\s[-|:–]\s|:", l)
+              and not _re.match(r"(?i)(built|developed|used|implemented|designed|created|worked|integrated)", l)]
+    titles = [_re.split(r"\s[-|:–]\s|:", t)[0].strip() for t in (titled or cands)]
+    seen, out = set(), []
+    for t in titles:
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out[:limit]
+
+def _chips(items, color_rgb, color_hex):
+    return "".join(
+        f'<span style="display:inline-block;margin:4px 6px 4px 0;padding:5px 12px;border-radius:999px;'
+        f'background:rgba({color_rgb},0.12);color:{color_hex};border:1px solid rgba({color_rgb},0.35);'
+        f'font-size:12px;font-weight:600;">{_html.escape(str(i))}</span>'
+        for i in items
+    )
+
+def render_resume_summary(analysis):
+    st.markdown("### 📊 Your Resume Report")
+    render_score_ring(analysis["score"], 100)
+
+    skills = analysis.get("skills", [])
+    st.markdown(f"**🛠️ Skills detected ({len(skills)}):**")
+    if skills:
+        st.markdown(_chips(skills, "78,205,196", "#4ECDC4"), unsafe_allow_html=True)
+    else:
+        st.caption("No known technical skills detected. Add a clear Skills section.")
+
+    projects = _project_titles(analysis.get("projects_text", ""))
+    st.markdown(f"**🚀 Projects detected ({len(projects)}):**")
+    if projects:
+        st.markdown(_chips(projects, "255,169,77", "#FFA94D"), unsafe_allow_html=True)
+    else:
+        st.caption("No projects section detected. Project-based questions will be skipped.")
+
+    with st.expander("Score breakdown"):
+        for k, v in analysis.get("breakdown", {}).items():
+            st.write(f"- {k}: **{v}**")
+    if analysis.get("tips"):
+        with st.expander("💡 How to improve your resume"):
+            for t in analysis["tips"][:6]:
+                st.write(f"- {t}")
 
 # =========================================================
-# CORE LOGIC — UNCHANGED FROM THE WORKING VERSION
+# CORE LOGIC
 # =========================================================
 
 def get_db_name(interview_type):
@@ -424,7 +412,9 @@ def get_db_name(interview_type):
 def initialize_session():
     if "preload_box" not in st.session_state: st.session_state.preload_box = []
     if "stage" not in st.session_state: st.session_state.stage = "lobby"
-    if "lobby_step" not in st.session_state: st.session_state.lobby_step = 1  
+    
+    if "lobby_step" not in st.session_state: st.session_state.lobby_step = 0  
+    
     if "selected_role" not in st.session_state: st.session_state.selected_role = "" 
     if "current_q" not in st.session_state: st.session_state.current_q = ""
     if "category" not in st.session_state: st.session_state.category = ""
@@ -435,6 +425,10 @@ def initialize_session():
     if "cheat_count" not in st.session_state: st.session_state.cheat_count = 0
     if "exam_answers" not in st.session_state: st.session_state.exam_answers = []
     if "final_results" not in st.session_state: st.session_state.final_results = []
+    
+    if "use_resume_questions" not in st.session_state: st.session_state.use_resume_questions = False
+    if "custom_resume_questions" not in st.session_state: st.session_state.custom_resume_questions = []
+    if "custom_q_ideals" not in st.session_state: st.session_state.custom_q_ideals = {}  
 
 def get_database_question(category, difficulty, seen_list, interview_type, job_role=""):
     try:
@@ -470,54 +464,62 @@ def get_database_question(category, difficulty, seen_list, interview_type, job_r
         conn.close()
         return row[0] if row else None
     except Exception as e:
-        print(f"🚨 [UI DB X-RAY ERROR] get_database_question failed: {e}")
         return f"SYSTEM ERROR: {str(e)}"
 
 def _normalize_question(text):
-    """X-RAY HELPER: strips the markdown prefix from current_q to produce compare-safe text."""
     return (text or "").replace("**Question:**", "").strip()
 
 def get_evaluation_data_from_db(question_text):
     try:
         conn = sqlite3.connect(questions_generate.DB_CODING)
         cursor = conn.cursor()
-
-        # Step 1: fast path — exact match
         cursor.execute("SELECT test_cases, ideal_answer, mandatory_keywords FROM interview_questions WHERE question=?", (question_text,))
         row = cursor.fetchone()
 
-        # FIX: if the AI kept a '**Question:**' prefix when the question was saved
-        # (which later gets stripped from current_q), the exact match would fail
-        # and test_cases would silently come back []. Try a normalized fallback
-        # so the real test cases aren't missed.
         if not row:
-            print("🗄️ [UI DB X-RAY] No exact match found, trying the normalized fallback...")
             target = _normalize_question(question_text)
             cursor.execute("SELECT question, test_cases, ideal_answer, mandatory_keywords FROM interview_questions")
             for db_q, tcs, ideal, kws in cursor.fetchall():
                 if _normalize_question(db_q) == target:
                     row = (tcs, ideal, kws)
-                    print("🗄️ [UI DB X-RAY] ✅ Found a normalized match!")
                     break
 
         conn.close()
         if row:
             t_cases = json.loads(row[0]) if row[0] else []
-            print(f"🗄️ [UI DB X-RAY] Fetched {len(t_cases)} test cases + ideal_answer for fallback.")
             return t_cases, row[1] or "", row[2] or ""
-    except Exception as e:
-        print(f"🚨 [UI DB X-RAY ERROR] get_evaluation_data_from_db failed: {e}")
-    print("🗄️ [UI DB X-RAY] No evaluation data found in DB.")
+    except Exception:
+        pass
     return [], "", ""
+
+def get_coding_ideal_answer(question_text):
+    import re
+    try:
+        q_raw = (question_text or "").replace("**Question:**", "").strip()
+        key = " ".join(q_raw.lower().split())
+        conn = sqlite3.connect("coding_questions.db")
+        cur = conn.cursor()
+        cur.execute("SELECT ideal_answer FROM interview_questions WHERE question=? OR question=?", (q_raw, question_text))
+        row = cur.fetchone()
+        if not row:
+            cur.execute("SELECT question, ideal_answer FROM interview_questions")
+            for dq, ia in cur.fetchall():
+                if " ".join((dq or "").replace("**Question:**", "").lower().split()) == key:
+                    row = (ia,)
+                    break
+        conn.close()
+        if row and row[0]:
+            return re.sub(r"^```(?:python)?\s*|\s*```$", "", str(row[0]).strip()).strip()
+    except Exception as e:
+        print(f"🚨 [UI X-RAY ERROR] get_coding_ideal_answer failed: {e}")
+    return ""
 
 def fetch_question(category, difficulty, seen_list, interview_type, job_role):
     try:
         q = questions_generate.get_smart_question(category, difficulty, seen_list, interview_type, job_role)
-    except Exception as e:
-        print(f"🚨 [UI X-RAY ERROR] fetch_question API failed: {e}")
+    except Exception:
         q = None
     if not q or "SYSTEM ERROR" in q or q.startswith("TEST_COMPLETE") or q in seen_list:
-        print("🔍 [UI X-RAY] Falling back to DB for question fetch...")
         q = get_database_question(category, difficulty, seen_list, interview_type, job_role)
     if q is None: return "TEST_COMPLETE: You have solved all available questions!"
     if q in seen_list: return "TEST_COMPLETE: No new unique questions!"
@@ -526,16 +528,11 @@ def fetch_question(category, difficulty, seen_list, interview_type, job_role):
 def background_fetch(category, difficulty, seen_list, box, interview_type, job_role):
     add_script_run_ctx(threading.current_thread())
     if len(box) == 0:
-        print("🔍 [UI X-RAY] Background fetch triggered...")
         q = fetch_question(category, difficulty, seen_list, interview_type, job_role)
         if q and not q.startswith("SYSTEM ERROR") and not q.startswith("TEST_COMPLETE"):
             box.append(q)
-            print("🔍 [UI X-RAY] Background fetch successful. Question added to preload box.")
-        else:
-            print(f"🔍 [UI X-RAY] Background fetch did not return a usable question (got: '{q}'). Preload box will stay empty.")
 
 def trigger_preload():
-    print("🔍 [UI X-RAY] Starting thread for trigger_preload...")
     t = threading.Thread(target=background_fetch, args=(
         st.session_state.category, 
         st.session_state.difficulty, 
@@ -554,25 +551,30 @@ def save_question(question):
 
 def advance_to_next_question():
     if len(st.session_state.exam_answers) >= TOTAL_QUESTIONS:
-        print("🔍 [UI X-RAY] All questions answered. Moving to processing stage.")
         st.session_state.stage = "processing"
         return
+        
+    if st.session_state.get("use_resume_questions"):
+        if len(st.session_state.custom_resume_questions) > 0:
+            new_q = st.session_state.custom_resume_questions.pop(0)
+        else:
+            new_q = "TEST_COMPLETE: You have solved all available questions!"
+            
+        if new_q.startswith("TEST_COMPLETE"):
+            st.session_state.stage = "processing"
+        else:
+            save_question(new_q)
+            st.session_state.current_q = new_q
+            st.session_state.start_time = time.time()
+            st.session_state.stage = "interview"
+        return
+
     if len(st.session_state.preload_box) > 0:
         new_q = st.session_state.preload_box.pop(0)
-        print("🔍 [UI X-RAY] Popped new question from preload box.")
     else:
-        print("🔍 [UI X-RAY] Preload box empty. Fetching new question synchronously...")
         new_q = fetch_question(st.session_state.category, st.session_state.difficulty, st.session_state.seen_questions, st.session_state.interview_type, st.session_state.selected_role)
 
-    # FIX (this was the real bug): previously only "TEST_COMPLETE" was checked.
-    # The "SYSTEM ERROR" check was missing, so if the DB crashed, the candidate
-    # would see the raw error text displayed as if it were the next "question"!
     if new_q.startswith("TEST_COMPLETE") or new_q.startswith("SYSTEM ERROR"):
-        if new_q.startswith("SYSTEM ERROR"):
-            print(f"🚨 [UI X-RAY] Got a SYSTEM ERROR while fetching the next question: {new_q}")
-            print("🔍 [UI X-RAY] Stopping the exam here — the report will only cover the answers collected so far.")
-        else:
-            print("🔍 [UI X-RAY] No new unique questions left, and none remain in the DB either.")
         st.session_state.stage = "processing"
     else:
         save_question(new_q)
@@ -582,11 +584,6 @@ def advance_to_next_question():
         trigger_preload()
 
 def lock_selectbox_typing():
-    """Prevents typing/deleting inside Streamlit's selectbox search field
-    (its hidden <input> normally supports type-to-filter). Keeps click-to-open
-    and click-to-choose working exactly as before — only blocks manual keyboard
-    edits, which was confusing candidates into thinking the role/skill name
-    could be erased."""
     components.html("""
         <script>
             const doc = window.parent.document;
@@ -628,15 +625,84 @@ def main():
 
     if st.session_state.stage == "lobby":
             components.html("<script>if(window.parent.myTimer) clearInterval(window.parent.myTimer); window.parent.examActive = false; if(window.parent.myMic) window.parent.myMic.stop();</script>", height=0, width=0)
-            if st.session_state.lobby_step == 1:
+            
+            if st.session_state.lobby_step == 0:
+                st.subheader("📄 Pre-Screening: AI Resume Parsing (Optional)")
+                st.info("Upload your resume to generate a personalized mock interview based on your ACTUAL skills and projects!")
+                
+                uploaded_file = st.file_uploader("Upload Resume (PDF format)", type=["pdf"])
+                
+                if uploaded_file is not None:
+                    if "resume_analysis" not in st.session_state:
+                        with st.spinner("Analyzing Resume Structure & Skills..."):
+                            resume_text = resume_engine.extract_text(uploaded_file)
+                            st.session_state.resume_text = resume_text
+                            st.session_state.resume_analysis = resume_engine.analyze_resume(resume_text)
+                    
+                    analysis = st.session_state.resume_analysis
+                    
+                    if analysis["ok"]:
+                        render_resume_summary(analysis)
+                        
+                        st.markdown("### 🎯 Setup Your Personalized Interview")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            target_company = st.text_input("Target Company (e.g., Google, TCS):", "Google")
+                        with col2:
+                            target_role = st.text_input("Target Role (e.g., Backend Developer):", "Software Engineer")
+                        
+                        if st.button("🚀 Start Personalized Interview", type="primary", use_container_width=True):
+                            with st.spinner("Crafting customized questions based on your resume..."):
+                                match = resume_engine.match_jd(st.session_state.resume_text, resume_engine.jd_from_role(target_role))
+                                qs_data = resume_engine.generate_questions(target_company, target_role, analysis, match)
+                                
+                                pool = []
+                                for q in qs_data.get("company_questions", []): pool.append(q)
+                                for q in qs_data.get("scenario_questions", []): pool.append(q)
+                                
+                                if analysis.get("projects_text", "").strip():
+                                    for q in qs_data.get("project_questions", []): pool.append(q)
+                                
+                                if len(pool) < TOTAL_QUESTIONS:
+                                    pool.extend([{"question": "Could you elaborate on your general technical experience?", "hint": "Candidate should confidently explain their past roles and tech stack."}] * (TOTAL_QUESTIONS - len(pool)))
+                                
+                                # MEMORY SAVE HACK: Dict me direct hints save kardi
+                                st.session_state.custom_q_ideals = {p["question"]: (p.get("ideal_answer") or p.get("hint") or "No reference available.") for p in pool[:TOTAL_QUESTIONS]}
+                                st.session_state.custom_resume_questions = [p["question"] for p in pool[:TOTAL_QUESTIONS]]
+                                st.session_state.use_resume_questions = True
+                                
+                                st.session_state.interview_type = "Theory Concepts (Verbal/Text)"
+                                st.session_state.difficulty = "Applied"
+                                st.session_state.category = target_role
+                                st.session_state.exam_answers = []
+                                st.session_state.seen_questions = []
+                                
+                                st.session_state.current_q = st.session_state.custom_resume_questions.pop(0)
+                                st.session_state.start_time = time.time()
+                                st.session_state.stage = "interview"
+                                st.rerun()
+                    else:
+                        st.error(analysis["error"])
+                
+                st.markdown("---")
+                if st.button("Skip to Standard Interview ➡️", use_container_width=True):
+                    st.session_state.lobby_step = 1
+                    st.rerun()
+
+            elif st.session_state.lobby_step == 1:
                 render_step_progress(1)
                 st.subheader("🏢 Step 1: Select Your Target Job Role")
                 selected_role = st.selectbox("Job Roles", list(ROLES_DATA.keys()))
-                if st.button("Next ➡️", type="primary"):
-                    print(f"🔍 [UI X-RAY] Lobby Step 1 -> Role selected: {selected_role}")
-                    st.session_state.selected_role = selected_role
-                    st.session_state.lobby_step = 2
-                    st.rerun()
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("⬅️ Back"):
+                        st.session_state.lobby_step = 0
+                        st.rerun()
+                with col2:
+                    if st.button("Next ➡️", type="primary"):
+                        st.session_state.selected_role = selected_role
+                        st.session_state.lobby_step = 2
+                        st.rerun()
             elif st.session_state.lobby_step == 2:
                 render_step_progress(2)
                 st.subheader(f"🛠️ Step 2: Skills for {st.session_state.selected_role}")
@@ -651,7 +717,6 @@ def main():
                         st.rerun()
                 with col2:
                     if st.button("Next ➡️", type="primary"):
-                        print(f"🔍 [UI X-RAY] Lobby Step 2 -> Type: {temp_type}, Skill: {selected_skill}")
                         st.session_state.interview_type = temp_type
                         st.session_state.category = selected_skill
                         st.session_state.lobby_step = 3
@@ -669,7 +734,6 @@ def main():
                         st.rerun()
                 with col2:
                     if st.button("Next ➡️", type="primary"):
-                        print(f"🔍 [UI X-RAY] Lobby Step 3 -> Difficulty: {difficulty}")
                         st.session_state.difficulty = difficulty
                         st.session_state.lobby_step = 4
                         st.rerun()
@@ -685,17 +749,15 @@ def main():
                         st.rerun()
                 with col2:
                     if st.button("Start Interview 🚀", type="primary"):
+                        st.session_state.use_resume_questions = False
                         st.session_state.seen_questions = []
                         st.session_state.exam_answers = []
                         st.session_state.cheat_count = 0
                         st.session_state.preload_box = []  
                         
                         with st.spinner("Preparing your interview environment..."):
-                            print("🔍 [UI X-RAY] Starting New Interview...")
-                            print(f"🔍 [UI X-RAY] Role={st.session_state.selected_role}, Type={st.session_state.interview_type}, Skill={st.session_state.category}, Diff={st.session_state.difficulty}")
                             q = fetch_question(st.session_state.category, st.session_state.difficulty, st.session_state.seen_questions, st.session_state.interview_type, st.session_state.selected_role)
                             if q.startswith("TEST_COMPLETE") or q.startswith("SYSTEM ERROR"):
-                                print(f"🚨 [UI X-RAY] Could not get even the first question: {q}")
                                 st.error(q)
                             else:
                                 save_question(q)
@@ -706,7 +768,7 @@ def main():
                                 st.rerun()
 
     elif st.session_state.stage == "interview":
-        max_time = TIME_LIMITS.get(st.session_state.difficulty, 90)
+        max_time = TIME_LIMITS.get(st.session_state.difficulty, 180) 
         q_num = len(st.session_state.exam_answers)
         ring_circumference = round(2 * 3.14159265 * 28, 2)
 
@@ -939,13 +1001,11 @@ def main():
                     if not user_ans or not user_ans.strip(): st.warning("⚠️ Please write some code to run.")
                     else:
                         with st.spinner("Executing your code..."):
-                            print("🔍 [UI X-RAY] User clicked 'Run Code'. Fetching execution data...")
                             db_test_cases, db_ideal, db_keys = get_evaluation_data_from_db(st.session_state.current_q)
                             if not db_test_cases: db_test_cases = [] 
                             is_safe, sec_msg = code_evaluate.security_scan(user_ans)
                             if not is_safe: st.error(f"🚨 {sec_msg}")
                             else:
-                                print(f"🔍 [UI X-RAY] Running local execution for {st.session_state.category}...")
                                 passed, pass_cnt, tot_cnt, msg = code_evaluate.run_test_cases(user_ans, db_test_cases, st.session_state.category)
                                 if passed: st.success(f"✅ {pass_cnt}/{tot_cnt} Tests Passed!\n\n{msg}")
                                 else: st.error(f"⚠️ Failed ({pass_cnt}/{tot_cnt}).\n\n{msg}")
@@ -958,8 +1018,6 @@ def main():
                         st.rerun()
         else:
             user_ans = st.text_area("Your Answer:", height=150, placeholder="Tap here and type your answer...", key=f"ans_box_{q_num}")
-            # Auto-focus the answer box as soon as this question loads, so the
-            # candidate can start typing immediately without clicking into it.
             components.html(f"""
                 <script>
                     const doc = window.parent.document;
@@ -979,7 +1037,6 @@ def main():
                 </script>
             """, height=0, width=0)
             components.html("""
-                            
                             <style>
                                 #micBtn {
                                     transition: all 0.2s ease;
@@ -1025,19 +1082,17 @@ def main():
                                     }
                                     
                                     parent.isHoldingKeys = false;
-                                        // Tap-to-toggle support for mobile (no physical keyboard there,
-                                        // so Ctrl+Shift can't work) — works on desktop too via click.
-                                            let micOnByTap = false;
-                                            micBtn.addEventListener('click', () => {
-                                                if (parent.aiSpeaking) return;
-                                                if (!micOnByTap) {
-                                                    micOnByTap = true;
-                                                    try { parent.myMic.start(); } catch(err) {}
-                                                } else {
-                                                    micOnByTap = false;
-                                                    try { parent.myMic.stop(); } catch(err) {}
-                                                }
-                                            });
+                                        let micOnByTap = false;
+                                        micBtn.addEventListener('click', () => {
+                                            if (parent.aiSpeaking) return;
+                                            if (!micOnByTap) {
+                                                micOnByTap = true;
+                                                try { parent.myMic.start(); } catch(err) {}
+                                            } else {
+                                                micOnByTap = false;
+                                                try { parent.myMic.stop(); } catch(err) {}
+                                            }
+                                        });
 
                                     parent.myMic.onstart = () => { 
                                         micBtn.classList.remove('mic-inactive');
@@ -1138,49 +1193,98 @@ def main():
         current_cat = st.session_state.category  
         
         def evaluate_single_answer(item):
-            add_script_run_ctx(threading.current_thread())
             q_text, a_text, event = item["q"], item["a"] or "", item.get("event", "normal")
-            if event == "cheat": return {"question": q_text, "answer": a_text, "status": "Wrong", "feedback": "Failed due to Cheating.", "points": -0.25}
-            elif event == "timeout" and a_text in ("", "[NO ANSWER PROVIDED]"): return {"question": q_text, "answer": a_text, "status": "Incomplete", "feedback": "Time ran out.", "points": 0.0}
-            
-            try:
-                if current_type == "Coding": 
-                    print(f"🔍 [UI X-RAY] Processing final answer for: {q_text[:30]}...")
-                    db_test_cases, db_ideal, db_keys = get_evaluation_data_from_db(q_text)
-                    if not db_test_cases: db_test_cases = [] 
-                    print(f"🔍 [UI X-RAY] Test cases available for final evaluation: {len(db_test_cases)}")
-                    
-                    print("🔍 [UI X-RAY] Calling code_evaluate.evaluate_candidate_code...")
-                    res = code_evaluate.evaluate_candidate_code(q_text, a_text, db_test_cases, db_ideal, db_keys, current_diff, current_cat)
-                    print(f"🔍 [UI X-RAY] Code Evaluator Response: {res}")
-                    points = code_evaluate.calculate_code_score(res)
-                else:
-                    res = evaluate_answer.evaluate_candidate_answer(q_text, a_text, current_diff)
-                    points = evaluate_answer.calculate_score(res)
-            except Exception as e:
-                # FIX: only the exception message was printed before, not the full
-                # traceback — that made it hard to pin down where the crash actually happened.
-                print(f"🚨 [UI X-RAY ERROR] Crash during evaluation for question '{q_text[:40]}...': {e}")
-                traceback.print_exc()
-                res = {"status": "Incomplete", "feedback": f"Error: {e}"}; points = 0.0
-                
-            return {"question": q_text, "answer": a_text, "status": res.get("status"), "feedback": res.get("overall_feedback") or res.get("feedback"), "points": points}
+            status, feedback, points = "Incomplete", "Error occurred.", 0.0
 
-        print("🔍 [UI X-RAY] Starting Final Evaluation ThreadPool (max_workers=2 to prevent API crash)...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            st.session_state.final_results = list(executor.map(evaluate_single_answer, st.session_state.exam_answers))
+            if event == "cheat": 
+                status, feedback, points = "Wrong", "Failed due to Cheating.", -0.25
+            elif event == "timeout" and a_text in ("", "[NO ANSWER PROVIDED]"): 
+                status, feedback, points = "Incomplete", "Time ran out.", 0.0
+            else:
+                try:
+                    if current_type == "Coding": 
+                        db_test_cases, db_ideal, db_keys = get_evaluation_data_from_db(q_text)
+                        if not db_test_cases: db_test_cases = [] 
+                        res = code_evaluate.evaluate_candidate_code(q_text, a_text, db_test_cases, db_ideal, db_keys, current_diff, current_cat)
+                        points = code_evaluate.calculate_code_score(res)
+                        status = res.get("status", "Incomplete")
+                        feedback = res.get("overall_feedback") or res.get("feedback", "")
+                    else:
+                        res = evaluate_answer.evaluate_candidate_answer(q_text, a_text, current_diff)
+                        points = evaluate_answer.calculate_score(res)
+                        status = res.get("status", "Incomplete")
+                        feedback = res.get("overall_feedback") or res.get("feedback", "")
+                except Exception as e:
+                    traceback.print_exc()
+                    feedback = f"Error: {e}"
+
+            # 🚀 MEMORY / DB SAFE IDEAL ANSWER LOGIC
+            ideal_ans = ""
+            q_clean = q_text.replace("**Question:**", "").strip()
+
+            if current_type == "Coding":
+                ideal_ans = get_coding_ideal_answer(q_clean)
+            else:
+                try:
+                    _ref = evaluate_answer.get_reference(q_clean)
+                    if _ref.get("ideal_answer"):
+                        ideal_ans = _ref["ideal_answer"]
+                except Exception:
+                    pass
+
+                if not ideal_ans and st.session_state.get("use_resume_questions"):
+                    hint = st.session_state.custom_q_ideals.get(q_text) or st.session_state.custom_q_ideals.get(q_clean)
+                    if hint:
+                        ideal_ans = hint
+
+                if not ideal_ans:
+                    try:
+                        db_ideal = questions_generate.get_ideal_answer_from_db(q_clean, current_type)
+                        if db_ideal and db_ideal.strip().startswith("{"):
+                            try:
+                                parsed = json.loads(db_ideal)
+                                if isinstance(parsed, dict):
+                                    ideal_ans = parsed.get("approach", parsed.get("ideal_answer", parsed.get("unidirectional_alternative", str(parsed))))
+                            except Exception:
+                                ideal_ans = db_ideal
+                        else:
+                            ideal_ans = db_ideal
+                    except Exception:
+                        pass
+
+            if not ideal_ans or not str(ideal_ans).strip():
+                ideal_ans = "Reference answer is not available for this question."
+                    
+            return {
+                "question": q_text, 
+                "answer": a_text, 
+                "status": status, 
+                "feedback": feedback, 
+                "points": points,
+                "ideal_answer": ideal_ans 
+            }
+
+        # 🚀 NORMAL SYNCHRONOUS LOOP: No Threading! Fixes the "missing ScriptRunContext" permanently
+        results = []
+        for ans in st.session_state.exam_answers:
+            results.append(evaluate_single_answer(ans))
+        st.session_state.final_results = results
         
-        print("🔍 [UI X-RAY] All answers evaluated successfully. Rendering results.")
         st.session_state.stage = "results"
         st.rerun()
 
     elif st.session_state.stage == "results":
         components.html("<script>if(window.parent.myTimer) clearInterval(window.parent.myTimer);</script>", height=0, width=0)
         st.title("🏆 Final Interview Report")
+        
         total_score = max(0.0, sum([r["points"] for r in st.session_state.final_results]))
-        print(f"📊 [RESULTS-X-RAY] Total Score: {total_score:.2f} / {len(st.session_state.final_results)} | Cheat count: {st.session_state.cheat_count}")
         render_score_ring(total_score, len(st.session_state.final_results))
         
+        show_ideal = st.session_state.get("show_ideal_answers", False)
+        if st.button("Hide Ideal Answers" if show_ideal else "💡 Show Ideal Answers", use_container_width=True):
+            st.session_state.show_ideal_answers = not show_ideal
+            st.rerun()
+            
         for idx, res in enumerate(st.session_state.final_results):
             with st.expander(f"Question {idx+1} | Result: {res['status']} | Score: {res['points']} marks", expanded=True):
                 render_status_badge(res['status'])
@@ -1199,11 +1303,22 @@ def main():
                     st.warning(f"👍 {res['feedback']}")
                 else: 
                     st.error(f"💡 {res['feedback']}")
+                
+                if st.session_state.get("show_ideal_answers", False):
+                    st.markdown("**✅ Ideal Answer (reference):**")
+                    if st.session_state.interview_type == "Coding":
+                        st.code(res['ideal_answer'], language='python')
+                    else:
+                        st.info(res['ideal_answer'])
+                    st.caption("AI-generated reference answer. Other valid approaches may exist.")
                     
         if st.button("Return to Lobby", type="primary", use_container_width=True):
-            st.session_state.preload_box = []  
-            st.session_state.lobby_step = 1    
+            st.session_state.preload_box = []
+            st.session_state.show_ideal_answers = False  
+            st.session_state.lobby_step = 0    
             st.session_state.stage = "lobby"
+            if "resume_analysis" in st.session_state:
+                del st.session_state["resume_analysis"]
             st.rerun()
 
 if __name__ == "__main__":
